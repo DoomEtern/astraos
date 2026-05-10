@@ -311,8 +311,27 @@ export function QuestsView() {
 // ─── Deep Work ────────────────────────────────────────────────────
 export function DeepWorkView() {
   const { sessions, addSession } = useStore()
+
+  // ── Configurable durations (persisted to localStorage) ──────────
+  const [focusMins, setFocusMins] = useState(() => parseInt(localStorage.getItem('astra_focus_mins') || '25'))
+  const [breakMins, setBreakMins] = useState(() => parseInt(localStorage.getItem('astra_break_mins') || '5'))
+  const [showSettings, setShowSettings] = useState(false)
+  const [draftFocus, setDraftFocus] = useState(focusMins)
+  const [draftBreak, setDraftBreak] = useState(breakMins)
+
+  const saveDurations = () => {
+    const f = Math.max(1, Math.min(180, draftFocus))
+    const b = Math.max(1, Math.min(60, draftBreak))
+    setFocusMins(f); setBreakMins(b)
+    localStorage.setItem('astra_focus_mins', String(f))
+    localStorage.setItem('astra_break_mins', String(b))
+    if (!running) setSecs(mode === 'focus' ? f * 60 : b * 60)
+    setShowSettings(false)
+  }
+
+  // ── Timer state ──────────────────────────────────────────────────
   const [running, setRunning] = useState(false)
-  const [secs, setSecs] = useState(25*60)
+  const [secs, setSecs] = useState(focusMins * 60)
   const [mode, setMode] = useState<'focus'|'break'>('focus')
   const [sessCount, setSessCount] = useState(0)
   const [task, setTask] = useState('')
@@ -322,19 +341,28 @@ export function DeepWorkView() {
 
   const today = format(new Date(), 'yyyy-MM-dd')
   const todaySessions = sessions.filter(s => s.started_at.startsWith(today))
-  const totalMins = todaySessions.reduce((a,s) => a+s.duration_mins, 0)
+  const totalLoggedMins = todaySessions.reduce((a, s) => a + s.duration_mins, 0)
 
-  // Build last 7 days chart from real sessions
-  const last7 = Array.from({ length:7 }, (_, i) => {
-    const d = new Date(); d.setDate(d.getDate()-6+i)
-    const ds = d.toISOString().slice(0,10)
-    const label = d.toLocaleDateString('en',{ weekday:'short' })
-    const mins = sessions.filter(s=>s.started_at.startsWith(ds)).reduce((a,s)=>a+s.duration_mins,0)
+  const last7 = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(); d.setDate(d.getDate() - 6 + i)
+    const ds = d.toISOString().slice(0, 10)
+    const label = d.toLocaleDateString('en', { weekday: 'short' })
+    const mins = sessions.filter(s => s.started_at.startsWith(ds)).reduce((a, s) => a + s.duration_mins, 0)
     return { label, mins }
   })
 
-  const total = mode==='focus'?25*60:5*60
-  const progress = 1-(secs/total)
+  const totalSecs = mode === 'focus' ? focusMins * 60 : breakMins * 60
+  const progress = 1 - (secs / totalSecs)
+
+  const switchMode = (m: 'focus'|'break') => {
+    setMode(m); setRunning(false)
+    setSecs(m === 'focus' ? focusMins * 60 : breakMins * 60)
+  }
+
+  const reset = () => {
+    setRunning(false)
+    setSecs(mode === 'focus' ? focusMins * 60 : breakMins * 60)
+  }
 
   useEffect(() => {
     if (!running) return
@@ -342,40 +370,99 @@ export function DeepWorkView() {
       setSecs(s => {
         if (s <= 1) {
           setRunning(false)
-          if (mode==='focus') {
-            setSessCount(n=>n+1)
-            addSession({ task:task||'Focus Session', duration_mins:25, type, started_at:new Date().toISOString() })
-            setMode('break'); return 5*60
-          } else { setMode('focus'); return 25*60 }
+          if (mode === 'focus') {
+            setSessCount(n => n + 1)
+            addSession({ task: task || 'Focus Session', duration_mins: focusMins, type, started_at: new Date().toISOString() })
+            setMode('break'); return breakMins * 60
+          } else {
+            setMode('focus'); return focusMins * 60
+          }
         }
-        return s-1
+        return s - 1
       })
     }, 1000)
     return () => { if (timerRef.current) clearInterval(timerRef.current) }
-  }, [running, mode, task, type])
+  }, [running, mode, task, type, focusMins, breakMins])
 
-  const mm = String(Math.floor(secs/60)).padStart(2,'0')
-  const ss2 = String(secs%60).padStart(2,'0')
+  const mm = String(Math.floor(secs / 60)).padStart(2, '0')
+  const ss2 = String(secs % 60).padStart(2, '0')
 
   const logManual = async () => {
     if (!task.trim() || !el) return
-    await addSession({ task, duration_mins:25, type, started_at:new Date().toISOString() })
+    await addSession({ task, duration_mins: focusMins, type, started_at: new Date().toISOString() })
     setTask('')
   }
 
   return (
     <motion.div variants={c} initial="hidden" animate="show">
-      <motion.div variants={it}>
-        <h2 style={{ fontSize:22, fontWeight:900, color:'#E2E8F0', letterSpacing:'-0.03em', marginBottom:2 }}>Deep Work</h2>
-        <p style={{ fontSize:11, color:'#4B5563', marginBottom:20 }}>Enter flow state. Every logged session builds real data.</p>
+      <motion.div variants={it} style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:20 }}>
+        <div>
+          <h2 style={{ fontSize:22, fontWeight:900, color:'#E2E8F0', letterSpacing:'-0.03em', marginBottom:2 }}>Deep Work</h2>
+          <p style={{ fontSize:11, color:'#4B5563' }}>Enter flow state. Every logged session builds real data.</p>
+        </div>
+        <button className="btn-ghost" onClick={() => { setDraftFocus(focusMins); setDraftBreak(breakMins); setShowSettings(s => !s) }}
+          style={{ fontSize:11 }}>⚙ Timer Settings</button>
       </motion.div>
+
+      {/* Duration settings panel */}
+      <AnimatePresence>
+        {showSettings && (
+          <motion.div initial={{ opacity:0, height:0 }} animate={{ opacity:1, height:'auto' }} exit={{ opacity:0, height:0 }}>
+            <Card style={{ padding:'14px 16px', marginBottom:12 }}>
+              <SLabel>Timer Durations</SLabel>
+              <div style={{ display:'flex', alignItems:'flex-end', gap:12 }}>
+                <div>
+                  <div style={{ fontSize:9, color:'#4B5563', marginBottom:4 }}>FOCUS (minutes)</div>
+                  <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                    <button onClick={() => setDraftFocus(f => Math.max(1, f-5))}
+                      style={{ width:28, height:28, borderRadius:7, border:'1px solid rgba(139,92,246,0.25)', background:'rgba(139,92,246,0.08)', color:'#A78BFA', fontSize:16, cursor:'pointer' }}>−</button>
+                    <input type="number" className="input-field" value={draftFocus} min={1} max={180}
+                      onChange={e => setDraftFocus(Math.max(1, Math.min(180, parseInt(e.target.value)||1)))}
+                      style={{ width:60, textAlign:'center', fontSize:16, fontWeight:700, color:'#8B5CF6' }} />
+                    <button onClick={() => setDraftFocus(f => Math.min(180, f+5))}
+                      style={{ width:28, height:28, borderRadius:7, border:'1px solid rgba(139,92,246,0.25)', background:'rgba(139,92,246,0.08)', color:'#A78BFA', fontSize:16, cursor:'pointer' }}>+</button>
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize:9, color:'#4B5563', marginBottom:4 }}>BREAK (minutes)</div>
+                  <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                    <button onClick={() => setDraftBreak(b => Math.max(1, b-1))}
+                      style={{ width:28, height:28, borderRadius:7, border:'1px solid rgba(139,92,246,0.25)', background:'rgba(139,92,246,0.08)', color:'#A78BFA', fontSize:16, cursor:'pointer' }}>−</button>
+                    <input type="number" className="input-field" value={draftBreak} min={1} max={60}
+                      onChange={e => setDraftBreak(Math.max(1, Math.min(60, parseInt(e.target.value)||1)))}
+                      style={{ width:60, textAlign:'center', fontSize:16, fontWeight:700, color:'#A78BFA' }} />
+                    <button onClick={() => setDraftBreak(b => Math.min(60, b+1))}
+                      style={{ width:28, height:28, borderRadius:7, border:'1px solid rgba(139,92,246,0.25)', background:'rgba(139,92,246,0.08)', color:'#A78BFA', fontSize:16, cursor:'pointer' }}>+</button>
+                  </div>
+                </div>
+                <div style={{ display:'flex', gap:6, paddingBottom:1 }}>
+                  <button className="btn-primary" onClick={saveDurations} style={{ padding:'7px 16px', fontSize:12 }}>Save</button>
+                  <button className="btn-ghost" onClick={() => setShowSettings(false)} style={{ padding:'7px 12px', fontSize:12 }}>Cancel</button>
+                </div>
+                <div style={{ paddingBottom:4 }}>
+                  <div style={{ fontSize:8, color:'#374151', marginBottom:4 }}>PRESETS</div>
+                  <div style={{ display:'flex', gap:4 }}>
+                    {[{label:'25/5',f:25,b:5},{label:'50/10',f:50,b:10},{label:'90/20',f:90,b:20}].map(p=>(
+                      <button key={p.label} onClick={() => { setDraftFocus(p.f); setDraftBreak(p.b) }}
+                        style={{ padding:'4px 9px', borderRadius:6, border:'1px solid rgba(139,92,246,0.2)', background: draftFocus===p.f&&draftBreak===p.b?'rgba(139,92,246,0.15)':'transparent', color: draftFocus===p.f&&draftBreak===p.b?'#A78BFA':'#4B5563', fontSize:10, fontWeight:600, cursor:'pointer' }}>
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </Card>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <motion.div variants={it} style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
         <Card style={{ padding:22, display:'flex', flexDirection:'column', alignItems:'center' }}>
           <div style={{ display:'flex', gap:6, marginBottom:20 }}>
             {(['focus','break'] as const).map(m => (
-              <button key={m} onClick={() => { setMode(m); setRunning(false); setSecs(m==='focus'?25*60:5*60) }}
+              <button key={m} onClick={() => switchMode(m)}
                 style={{ padding:'5px 14px', borderRadius:7, border:'1px solid', fontSize:10, fontWeight:700, letterSpacing:'0.05em', textTransform:'uppercase', background:mode===m?'rgba(139,92,246,0.12)':'transparent', borderColor:mode===m?'rgba(139,92,246,0.35)':'rgba(255,255,255,0.07)', color:mode===m?'#A78BFA':'#4B5563' }}>
-                {m==='focus'?'Focus':'Break'}
+                {m==='focus'?`Focus ${focusMins}m`:`Break ${breakMins}m`}
               </button>
             ))}
           </div>
@@ -391,11 +478,11 @@ export function DeepWorkView() {
           </div>
           <div style={{ display:'flex', gap:8 }}>
             <button className="btn-primary" style={{ padding:'9px 24px', fontSize:13 }} onClick={() => setRunning(r=>!r)}>{running?'⏸ Pause':'▶ Start'}</button>
-            <button className="btn-ghost" style={{ padding:'9px 14px', fontSize:13 }} onClick={() => { setRunning(false); setSecs(mode==='focus'?25*60:5*60) }}>↺</button>
+            <button className="btn-ghost" style={{ padding:'9px 14px', fontSize:13 }} onClick={reset}>↺</button>
             <button className="btn-ghost" style={{ padding:'9px 14px', fontSize:11 }} onClick={logManual} title="Log session manually">✓ Log</button>
           </div>
           <div style={{ display:'flex', gap:24, marginTop:20, paddingTop:16, borderTop:'1px solid rgba(255,255,255,0.05)', width:'100%', justifyContent:'center' }}>
-            {[['Sessions',sessCount,'#A78BFA'],['Today Mins',totalMins,'#8B5CF6']].map(([l,v,col])=>(
+            {[['Sessions',sessCount,'#A78BFA'],['Today Mins',totalLoggedMins,'#8B5CF6']].map(([l,v,col])=>(
               <div key={l as string} style={{ textAlign:'center' }}>
                 <div style={{ fontSize:26, fontWeight:700, color:col as string }}>{v as number}</div>
                 <div style={{ fontSize:9, color:'#4B5563', marginTop:2, textTransform:'uppercase', letterSpacing:'0.06em' }}>{l as string}</div>
